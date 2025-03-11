@@ -15,15 +15,15 @@ import { TSocketRequestCleaned } from "./ws/types";
 
 type TSymbol = (typeof symbols)[number];
 type BuyContractRequest = TSocketRequestCleaned<"buy">;
-const symbols = ["R_10"] as const;
+const symbols = ["R_10", "R_25", "R_50", "R_75", "R_100"] as const;
 
 const BALANCE_TO_START_TRADING = 100;
 const CONTRACT_SECONDS = 2;
 
 const config: MoneyManagementV2 = {
   type: "fixed",
-  initialStake: 1,
-  profitPercent: 105.83,
+  initialStake: 5,
+  profitPercent: 20,
   maxStake: 100,
   maxLoss: 7,
   sorosLevel: 20,
@@ -47,7 +47,7 @@ const contractParams: BuyContractRequest = {
     amount: config.initialStake,
     basis: "stake",
     limit_order: {
-      take_profit: config.initialStake,
+      take_profit: config.initialStake * 0.2, // 20% of initial stake
     },
     growth_rate: 0.05,
   },
@@ -76,7 +76,7 @@ let subscriptions: {
 
 // Adicionar um array para controlar todas as subscrições ativas
 let activeSubscriptions: any[] = [];
-
+let prevAccHistory = 0;
 // Inicializar o banco de dados
 const database = initDatabase();
 const tradeService = new TradeService(database);
@@ -100,6 +100,33 @@ moneyManager.setOnTargetReached((profit, balance) => {
 });
 
 const ticksMap = new Map<TSymbol, number[]>([]);
+
+const prevAccHistoryMap = new Map<TSymbol, number>(symbols.map((s) => [s, 0]));
+
+const newSymbolTrade = new Map<TSymbol, boolean>(symbols.map((s) => [s, false]));
+const symbolIsTrading = new Map<TSymbol, boolean>(symbols.map((s) => [s, false]));
+
+function resetSymbolTrades() {
+  const keys = newSymbolTrade.keys();
+  Array.from(keys).forEach((key) => {
+    newSymbolTrade.set(key, false);
+  })
+}
+
+function resetSymbolIsTrading() {
+  const keys = symbolIsTrading.keys();
+  Array.from(keys).forEach((key) => {
+    symbolIsTrading.set(key, false);
+  })
+}
+
+function checkIfIsTrading() {
+  return Array.from(symbolIsTrading.values()).some((v) => v === true);
+}
+
+function checkIfIsNewSymbolTrade() {
+  return Array.from(newSymbolTrade.values()).some((v) => v === true);
+}
 
 function createTradeTimeout() {
   lastContractIntervalId = setInterval(() => {
@@ -136,7 +163,7 @@ function handleTradeResult({
     | undefined;
 }) {
   if (status === "open") return;
-
+  
   updateActivityTimestamp();
   const isWin = status === "won";
 
@@ -197,6 +224,9 @@ function handleTradeResult({
       balanceAfter: newBalance,
     })
     .catch((err) => console.error("Erro ao salvar trade:", err));
+
+  resetSymbolTrades();
+  resetSymbolIsTrading();
 
   clearTradeTimeout();
 }
@@ -280,9 +310,9 @@ const startBot = async () => {
   }
 
   try {
-    subscriptions.ticks = subscribeToTicks("R_10");
+    subscriptions.ticks = symbols.map(subscribeToTicks);
     subscriptions.contracts = subscribeToOpenOrders();
-    subscriptions.proposals = subscribeToProposal();
+    subscriptions.proposals = symbols.map(subscribeToProposal);
 
     if (!subscriptions.ticks || !subscriptions.contracts || !subscriptions.proposals) {
       throw new Error("Falha ao criar subscrições");
@@ -349,6 +379,9 @@ const subscribeToTicks = (symbol: TSymbol) => {
       }
     }
 
+    if(checkIfIsTrading()) return;
+
+    const newTrade = newSymbolTrade.get(symbol);
     
     if (newTrade === true) {
       updateActivityTimestamp(); // Atualizar timestamp ao identificar sinal
@@ -368,13 +401,12 @@ const subscribeToTicks = (symbol: TSymbol) => {
         .then((data) => {
           const contractId = data.buy?.contract_id;
           lastContractId = contractId;
-          createTradeTimeout();
+          // createTradeTimeout();
+          isTrading = true;
+          symbolIsTrading.set(symbol, true);
         }).catch((err) => {
           console.log("ERROR BUYING CONTRACT", err);          
         })
-
-      newTrade = false;
-
     }
   });
 
@@ -417,19 +449,29 @@ const subscribeToOpenOrders = () => {
   return contractSub;
 };
 
-const subscribeToProposal = () => {
+const subscribeToProposal = (symbol: TSymbol) => {
   const proposalSubs = apiManager.augmentedSubscribe(
     "proposal",
     {
       ...contractParams.parameters!,
+      symbol
     }
   );
   const proposalSub = proposalSubs.subscribe((data) => {
-    const accHist = data.proposal?.contract_details?.ticks_stayed_in;      
-    if (accHist) {
+    const accHist = data.proposal?.contract_details?.ticks_stayed_in;
+    const prevAcc = prevAccHistoryMap.get(symbol);
+
+    if (accHist && prevAcc !== undefined) {
       const curAccStats = accHist[0];
-      newTrade = curAccStats === 0;
+      newTrade = curAccStats === 0 && prevAcc <= 5;
+      prevAccHistoryMap.set(symbol, curAccStats);
+
+      if(newTrade && !checkIfIsTrading() && !checkIfIsNewSymbolTrade()) {
+        newSymbolTrade.set(symbol, true);
+        contractParams.parameters!.symbol = symbol;
+      }
     }
+
   });
   activeSubscriptions.push(proposalSub);
   return proposalSub;
@@ -458,7 +500,7 @@ setInterval(async () => {
   ) {
     // Verificar se o bot está "travado"
     const lastActivity = Date.now() - lastActivityTimestamp;
-    if (lastActivity > 60_000 * 2) {
+    if (lastActivity > 60_000 * 60) {
       // 2 minutos sem atividade
       console.log("Detectado possível travamento do bot, resetando estados...");
       isTrading = false;
