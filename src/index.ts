@@ -23,7 +23,7 @@ const CONTRACT_SECONDS = 2;
 const config: MoneyManagementV2 = {
   type: "fixed",
   initialStake: 5,
-  profitPercent: 20,
+  profitPercent: 46,
   maxStake: 100,
   maxLoss: 7,
   sorosLevel: 20,
@@ -47,7 +47,7 @@ const contractParams: BuyContractRequest = {
     amount: config.initialStake,
     basis: "stake",
     limit_order: {
-      take_profit: config.initialStake * 0.2, // 20% of initial stake
+      take_profit: config.initialStake * 0.4, // 40% of initial stake
     },
     growth_rate: 0.05,
   },
@@ -133,7 +133,7 @@ function createTradeTimeout() {
     if (lastContractId) {
       getLastTradeResult(lastContractId);
     }
-  }, tradeConfig.ticksCount * CONTRACT_SECONDS * 1000 * 5);
+  }, (tradeConfig.ticksCount * CONTRACT_SECONDS) * 1000 * 30);
 }
 
 function clearTradeTimeout() {
@@ -401,7 +401,7 @@ const subscribeToTicks = (symbol: TSymbol) => {
         .then((data) => {
           const contractId = data.buy?.contract_id;
           lastContractId = contractId;
-          // createTradeTimeout();
+          createTradeTimeout();
           isTrading = true;
           symbolIsTrading.set(symbol, true);
         }).catch((err) => {
@@ -500,7 +500,7 @@ setInterval(async () => {
   ) {
     // Verificar se o bot está "travado"
     const lastActivity = Date.now() - lastActivityTimestamp;
-    if (lastActivity > 60_000 * 60) {
+    if (lastActivity > 60_000 * 2) {
       // 2 minutos sem atividade
       console.log("Detectado possível travamento do bot, resetando estados...");
       isTrading = false;
